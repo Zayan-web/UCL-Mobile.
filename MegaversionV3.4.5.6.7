@@ -1,21 +1,19 @@
 from ursina import *
 from ursina.prefabs.first_person_controller import FirstPersonController
 import random
-import time
-import math
+import pyttsx3  # Import the text-to-speech library
 
-# Initialize the app
 app = Ursina()
 
-# Background Music Setup
-background_music = Audio("assets/background_music.mp3", loop=True, autoplay=True)
-
-# Match commentary (can later be expanded into audio)
-commentary_text = Text(text="", position=(0, 0.4), color=color.white, scale=2)
-match_time = 0
+# Initialize Text-to-Speech Engine
+engine = pyttsx3.init()
 
 # List of teams
 teams = ['Barcelona', 'Liverpool', 'Bayern Munich', 'Paris Saint-Germain', 'Man city', 'Arsenal']
+
+# Set initial team
+selected_team = None
+ai_team = None
 
 # Basic Player Setup for Teams (for simplicity, they are represented by colored cubes)
 team_players = {
@@ -31,11 +29,9 @@ team_players = {
 score_left = 0
 score_right = 0
 game_over = False
-selected_team = None
-ai_team = None
 
-# Simple Soccer Ball setup
-soccer_ball = Entity(model='sphere', scale=1, color=color.white, position=(0, 0.5, 0), collider='sphere')
+# Simple Soccer Ball setup with enhanced physics
+soccer_ball = Entity(model='sphere', scale=1, color=color.white, position=(0, 0.5, 0), collider='sphere', velocity=Vec3(0,0,0))
 
 # Create basic stadium and field
 field = Entity(model='plane', scale=(30, 1, 50), color=color.green, collider='box')
@@ -49,19 +45,14 @@ game_over_text = Text(text="", position=(0, 0.5), color=color.red, scale=3)
 # Player and Robot Controllers
 player = None
 robots = []
-shooting_power = 0
-shooting = False
 
-# Score sound
-goal_sound = Audio("assets/goal_sound.mp3", autoplay=False)
+# Background Music and Sound Effects
+background_music = Audio('assets/background_music.mp3', loop=True, autoplay=True, volume=0.1)
+kick_sound = Audio('assets/kick_sound.wav', autoplay=False)
+goal_sound = Audio('assets/goal_sound.wav', autoplay=False)
 
-# UI to restart the game
-restart_button = Button(parent=camera.ui, text="Restart", scale=(0.3, 0.1), position=(0, -0.2), color=color.gray, on_click=lambda: restart_game())
-
-# Function for commentary (can be text or sound-based commentary)
-def commentary(text):
-    commentary_text.text = text
-    invoke(lambda: commentary_text.text = "", delay=3)
+# Crowd Cheering Sound
+crowd_cheering = Audio('assets/crowd_cheering.mp3', loop=True, autoplay=True, volume=0.1)
 
 # Team Selection Menu
 def team_selection():
@@ -82,15 +73,13 @@ def team_selection():
         button = Button(parent=menu, text=team, scale=(0.4, 0.1), position=(0, 0.15 - (i * 0.2), 0), color=color.gray, on_click=lambda team=team: select_team(team))
         buttons.append(button)
 
-# Start the Game
 def start_game(player_team, ai_team):
-    global selected_team, score_left, score_right, game_over, player, robots, shooting_power, shooting, match_time
+    global selected_team, score_left, score_right, game_over, player, robots
     selected_team = player_team
     ai_team = ai_team
     score_left = 0
     score_right = 0
     game_over = False
-    match_time = time.time()
 
     # Create the player character based on the team selection
     player = Entity(model='cube', color=team_players[player_team][0], scale=(1, 2, 1), position=(-5, 1, 0), collider='box', origin_y=0.5)
@@ -101,82 +90,93 @@ def start_game(player_team, ai_team):
         robot = Entity(model='cube', color=team_players[ai_team][1], scale=(1, 2, 1), position=(5, 1, i * 3), collider='box', origin_y=0.5)
         robots.append(robot)
 
-    # Soccer Ball Controls
+    # Soccer Ball Controls with enhanced physics
     def update():
-        global score_left, score_right, game_over, shooting_power, shooting, match_time
+        global score_left, score_right, game_over
 
-        # Ball movement
+        # Ball movement based on velocity
+        soccer_ball.position += soccer_ball.velocity * time.dt
+
+        # Ball collision and stopping
         if soccer_ball.position.y < 0:
             soccer_ball.position = Vec3(0, 0.5, 0)  # Reset ball position if it falls below the ground
+            soccer_ball.velocity = Vec3(0, 0, 0)  # Stop the ball
 
         # Ball in goal check
         if soccer_ball.position.x < -15 and abs(soccer_ball.position.z) < 2:
             score_right += 1
-            print(f"Goal! Score: {score_left} - {score_right}")
             goal_sound.play()  # Play goal sound
-            commentary(f"Goal for {ai_team}!")
+            crowd_cheering.volume = 0.2  # Increase crowd noise intensity when a goal is scored
+            commentary("Right team scores!")
+            print(f"Goal! Score: {score_left} - {score_right}")
             soccer_ball.position = Vec3(0, 0.5, 0)  # Reset ball to center
+            soccer_ball.velocity = Vec3(0, 0, 0)
 
         if soccer_ball.position.x > 15 and abs(soccer_ball.position.z) < 2:
             score_left += 1
-            print(f"Goal! Score: {score_left} - {score_right}")
             goal_sound.play()  # Play goal sound
-            commentary(f"Goal for {player_team}!")
+            crowd_cheering.volume = 0.2  # Increase crowd noise intensity when a goal is scored
+            commentary("Left team scores!")
+            print(f"Goal! Score: {score_left} - {score_right}")
             soccer_ball.position = Vec3(0, 0.5, 0)  # Reset ball to center
+            soccer_ball.velocity = Vec3(0, 0, 0)
 
         # Update the score text
         score_text.text = f"Score: {score_left} - {score_right}"
 
-        # Ball control (kick action)
+        # Ball control (kick action) with enhanced kicking force
         if held_keys['space']:
-            shooting = True
-            shooting_power = min(shooting_power + time.dt, 1)  # Charge shot
-        elif not held_keys['space'] and shooting:
-            soccer_ball.position += player.forward * shooting_power * 10  # Shoot with power
-            shooting = False
-            shooting_power = 0  # Reset shooting power after the shot
+            soccer_ball.velocity = player.forward * 5  # Kick the ball forward
+            kick_sound.play()  # Play kick sound
 
-        # Player movement
+        # Player movement with adjustable speed
+        player_speed = 5
         if held_keys['w']:
-            player.position += Vec3(0, 0, 1) * time.dt * 5
+            player.position += Vec3(0, 0, 1) * time.dt * player_speed
         if held_keys['s']:
-            player.position += Vec3(0, 0, -1) * time.dt * 5
+            player.position += Vec3(0, 0, -1) * time.dt * player_speed
         if held_keys['a']:
-            player.position += Vec3(-1, 0, 0) * time.dt * 5
+            player.position += Vec3(-1, 0, 0) * time.dt * player_speed
         if held_keys['d']:
-            player.position += Vec3(1, 0, 0) * time.dt * 5
+            player.position += Vec3(1, 0, 0) * time.dt * player_speed
 
-        # Collision detection for ball and player
+        # Collision detection for ball and player (enhanced)
         if player.intersects(soccer_ball).hit:
-            soccer_ball.position += player.forward * 0.5  # Push the ball forward
+            soccer_ball.velocity = player.forward * 3  # Push the ball forward with reduced force
 
         # Simple AI for robots (move towards the ball)
         for robot in robots:
             direction_to_ball = soccer_ball.position - robot.position
             if direction_to_ball.length() < 10:  # If the robot is close to the ball
-                robot.position += direction_to_ball.normalized() * time.dt * 2  # Move towards the ball
+                robot.position += direction_to_ball.normalized() * time.dt * 3  # Move towards the ball
 
         # Game Over Check
         if score_left >= 5 or score_right >= 5:  # Arbitrary score limit to end game
             game_over = True
             game_over_text.text = "Game Over! Press 'R' to Restart"
-            restart_button.enabled = True  # Enable restart button
+            restart_button = Button(parent=camera.ui, text="Restart", scale=(0.3, 0.1), position=(0, -0.2), color=color.gray, on_click=restart_game)
 
     app.run()
 
-# Restart the game
+def commentary(message):
+    """Speaks the match commentary aloud"""
+    engine.say("Ohhh, what a goal!")
+    engine.runAndWait()
+    engine.say(message)
+    engine.runAndWait()
+
 def restart_game():
     global score_left, score_right, game_over, soccer_ball
     score_left = 0
     score_right = 0
     game_over = False
     soccer_ball.position = Vec3(0, 0.5, 0)  # Reset ball
+    soccer_ball.velocity = Vec3(0, 0, 0)  # Stop ball movement
     game_over_text.text = ""
+    crowd_cheering.volume = 0.1  # Reset crowd volume to default
     start_game(selected_team, ai_team)  # Restart game with selected team
 
 # Start the team selection menu
 team_selection()
 
-# Main game loop
 app.run()
-
